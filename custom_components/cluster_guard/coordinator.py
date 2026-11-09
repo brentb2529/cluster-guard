@@ -135,6 +135,8 @@ class ClusterGuardCoordinator(DataUpdateCoordinator[ClusterState]):
         )
         self._failures = 0
         self._previous: ClusterState | None = None
+        # Every node's address, learned from the cluster: if the node we talk to dies, we ask another.
+        self._hosts: list[str] = [data[CONF_HOST]]
 
     # ------------------------------------------------------------ config
 
@@ -151,7 +153,7 @@ class ClusterGuardCoordinator(DataUpdateCoordinator[ClusterState]):
 
     async def _async_update_data(self) -> ClusterState:
         try:
-            state = await self._fetch()
+            state = await self._fetch_from_any_node()
         except ProxmoxAuthError as err:
             raise UpdateFailed(f"Proxmox rejected the API token: {err}") from err
         except (ProxmoxConnectionError, ProxmoxError) as err:
@@ -173,6 +175,24 @@ class ClusterGuardCoordinator(DataUpdateCoordinator[ClusterState]):
         self._evaluate(state)
         self._previous = state
         return state
+
+    async def _fetch_from_any_node(self) -> ClusterState:
+        """Try the current node, then every other node we know; remember the one that answered."""
+        last: Exception | None = None
+        for host in [self.client.host] + [h for h in self._hosts if h != self.client.host]:
+            if host != self.client.host:
+                _LOGGER.info("Node %s is not answering; asking %s instead", self.client.host, host)
+                self.client.set_host(host)
+            try:
+                st = await self._fetch()
+            except ProxmoxConnectionError as err:
+                last = err
+                continue
+            learned = [n.ip for n in st.nodes.values() if n.ip]
+            if learned:
+                self._hosts = [self.entry.data[CONF_HOST]] + [h for h in learned if h != self.entry.data[CONF_HOST]]
+            return st
+        raise last or ProxmoxConnectionError("no node answered")
 
     async def _fetch(self) -> ClusterState:
         st = ClusterState()

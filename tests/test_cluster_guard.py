@@ -180,3 +180,21 @@ async def test_config_flow(hass: HomeAssistant, fake: FakeProxmox) -> None:
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "Cluster house"
     assert result["data"]["ha_vmid"] == 100
+
+
+async def test_switches_to_another_node_when_the_configured_one_dies(
+    hass: HomeAssistant, entry: MockConfigEntry, fake: FakeProxmox
+) -> None:
+    coord = await setup_cg(hass, entry)
+    assert coord.client.host == "pve1.lab"
+    fake.down_hosts = {"pve1.lab", "192.168.77.11"}  # the node we were configured against is gone
+    fake.nodes["pve1"] = False
+    await refresh(hass, coord)
+    assert coord.client.host == "192.168.77.12"  # learned from the cluster, used without a gap
+    assert ISSUE_UNREACHABLE not in issues(hass)
+    assert f"{ISSUE_NODE_DOWN}_pve1" in issues(hass)
+    assert hass.states.get("sensor.cluster_house_nodes_online").state == "2"
+    fake.down_hosts = set()
+    fake.nodes["pve1"] = True
+    await refresh(hass, coord)
+    assert issues(hass) == set()

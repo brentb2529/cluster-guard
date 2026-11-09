@@ -42,10 +42,18 @@ class FakeProxmox:
         }
         self.calls: list[str] = []
         self.fail_all: Exception | None = None
+        self.down_hosts: set[str] = set()  # node addresses that refuse connections
+        self.asked: list[str] = []  # which host each API call went to
 
-    def _check(self):
+    def _check(self, host: str | None = None):
         if self.fail_all:
             raise self.fail_all
+        if host is not None:
+            self.asked.append(host)
+            if host in self.down_hosts:
+                from custom_components.cluster_guard.api import ProxmoxConnectionError  # noqa: PLC0415
+
+                raise ProxmoxConnectionError(f"{host}: connection refused")
 
     async def version(self) -> dict[str, Any]:
         self._check()
@@ -113,8 +121,19 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> FakeProxmox:
         def __init__(self, *a, **k):
             self.host = a[1] if len(a) > 1 else "pve1.lab"
 
+        def set_host(self, host: str) -> None:
+            self.host = host
+
         def __getattr__(self, name):
-            return getattr(f, name)
+            target = getattr(f, name)
+            if not callable(target):
+                return target
+
+            async def call(*args, **kwargs):
+                f._check(self.host)
+                return await target(*args, **kwargs)
+
+            return call
 
     monkeypatch.setattr("custom_components.cluster_guard.coordinator.ProxmoxClient", _Client)
     monkeypatch.setattr("custom_components.cluster_guard.config_flow.ProxmoxClient", _Client)

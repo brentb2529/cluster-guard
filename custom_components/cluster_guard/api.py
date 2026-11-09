@@ -39,7 +39,13 @@ class ProxmoxClient:
         self._base = f"https://{host}:{port}/api2/json"
         self._headers = {"Authorization": f"PVEAPIToken={token_id}={token_secret}"}
         self._ssl: bool | None = None if verify_ssl else False
+        self._port = port
         self.host = host
+
+    def set_host(self, host: str) -> None:
+        """Talk to another node (the cluster answers the same from any of them)."""
+        self.host = host
+        self._base = f"https://{host}:{self._port}/api2/json"
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         url = f"{self._base}{path}"
