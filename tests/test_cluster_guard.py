@@ -82,11 +82,17 @@ async def test_failover_fires_event(hass: HomeAssistant, entry: MockConfigEntry,
     coord = await setup_cg(hass, entry)
     events = async_capture_events(hass, EVENT_FAILOVER)
     fake.nodes["pve1"] = False
+    fake.ha_state = "fence"  # Proxmox fencing the dead node: a failover in progress, not a fault
+    await refresh(hass, coord)
+    assert issues(hass) == {f"{ISSUE_NODE_DOWN}_pve1"}  # no resource error, no "not protected", no stale copy
+    assert hass.states.get("sensor.cluster_house_failover_state").state == "fence"
+    fake.ha_state = "started"
     fake.vm_node = "pve2"
     await refresh(hass, coord)
     assert len(events) == 1
     assert events[0].data == {"resource": "vm:100", "from": "pve1", "to": "pve2"}
     assert hass.states.get("sensor.cluster_house_home_assistant_runs_on").state == "pve2"
+    assert issues(hass) == {f"{ISSUE_NODE_DOWN}_pve1"}
 
 
 async def test_stale_and_failing_replication(hass: HomeAssistant, entry: MockConfigEntry, fake: FakeProxmox) -> None:

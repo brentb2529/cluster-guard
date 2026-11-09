@@ -252,6 +252,8 @@ class ClusterGuardCoordinator(DataUpdateCoordinator[ClusterState]):
 
     def _evaluate(self, st: ClusterState) -> None:
         prev = self._previous
+        # While a node is down, its copies and jobs cannot be read; the node issue already says it all.
+        degraded_now = st.nodes_online < st.nodes_total
         # Nodes
         for name, node in st.nodes.items():
             was_online = prev.nodes[name].online if prev and name in prev.nodes else True
@@ -285,9 +287,8 @@ class ClusterGuardCoordinator(DataUpdateCoordinator[ClusterState]):
         self._set_issue(ISSUE_QUORUM, st.quorate is False, ir.IssueSeverity.ERROR, {})
         # HA resources
         for sid, res in st.ha.items():
-            bad = res.state in ("error", "fence", "recovery") or (
-                res.request_state == "started" and res.state == "stopped"
-            )
+            # fence / recovery / migrate / starting are a failover in progress, not a fault
+            bad = res.state == "error"
             self._set_issue(
                 f"{ISSUE_HA_RESOURCE}_{sid.replace(':', '_')}",
                 bad,
@@ -308,7 +309,11 @@ class ClusterGuardCoordinator(DataUpdateCoordinator[ClusterState]):
         stale_jobs = [
             r
             for r in st.replication.values()
-            if (r.age_minutes is None or r.age_minutes > self.stale_minutes or r.fail_count > 0)
+            if (
+                r.fail_count > 0
+                if degraded_now  # mid-failover, "never synced from here" is normal; real errors are not
+                else (r.age_minutes is None or r.age_minutes > self.stale_minutes or r.fail_count > 0)
+            )
             and (self.ha_vmid is None or r.guest == self.ha_vmid)
             and st.nodes.get(r.target, NodeState(r.target, True)).online  # a dead target is the node issue
         ]
@@ -339,7 +344,9 @@ class ClusterGuardCoordinator(DataUpdateCoordinator[ClusterState]):
             others = {n for n in st.nodes if vm is None or n != vm.node}
             self._set_issue(
                 ISSUE_NO_HA,
-                vm is not None and (not protected or (st.nodes_total > 1 and not copies >= others)),
+                vm is not None
+                and not degraded_now
+                and (not protected or (st.nodes_total > 1 and not copies >= others)),
                 ir.IssueSeverity.WARNING,
                 {
                     "vm": self._vm_label(st, self.ha_vmid) or str(self.ha_vmid),
