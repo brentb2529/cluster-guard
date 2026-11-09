@@ -1,0 +1,15 @@
+migrate:
+  fields:
+    vmid:
+      required: true
+      example: 100
+      selector:
+        number:
+          min: 100
+          max: 999999999
+          mode: box
+    target:
+      required: true
+      example: pve2
+      selector:
+        text:

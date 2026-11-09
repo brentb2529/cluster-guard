@@ -1,0 +1,107 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to your Proxmox cluster",
+        "description": "Any node will do: the cluster answers from every node. Make an API token in Proxmox under Datacenter > Permissions > API Tokens for a user with the PVEAuditor role (read-only is enough; add VM.Migrate to that user if you want the migrate action).",
+        "data": {
+          "host": "Node address",
+          "port": "Port",
+          "token_id": "API token ID",
+          "token_secret": "API token secret",
+          "verify_ssl": "Verify the certificate"
+        },
+        "data_description": {
+          "host": "For example 192.168.2.11 or pve1.local",
+          "token_id": "In the form user@realm!tokenname, for example homeassistant@pve!ha",
+          "verify_ssl": "Leave off for Proxmox's self-signed certificate"
+        }
+      },
+      "ha_vm": {
+        "title": "Which VM is Home Assistant?",
+        "description": "Cluster {cluster} is reachable. Pick the VM this Home Assistant runs in, so Cluster Guard can watch its copies and where it runs.",
+        "data": {
+          "ha_vmid": "Home Assistant VM"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not reach the node. Check the address and that port 8006 is open.",
+      "invalid_auth": "Proxmox rejected the token. Check the token ID, the secret, and that the token has the PVEAuditor role.",
+      "token_format": "The token ID looks like user@realm!tokenname.",
+      "unknown": "Unexpected answer from Proxmox; see the log."
+    },
+    "abort": {
+      "already_configured": "This cluster is already set up."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Cluster Guard settings",
+        "data": {
+          "ha_vmid": "Home Assistant VM",
+          "stale_minutes": "Copy considered stale after (minutes)",
+          "poll_seconds": "Check the cluster every (seconds)"
+        },
+        "data_description": {
+          "stale_minutes": "Replication runs every minute on the recommended setup; 10 means ten missed runs before a warning."
+        }
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "quorum_lost": { "name": "Quorum lost" },
+      "node_online": { "name": "Node {node}" },
+      "replication_problem": { "name": "Copy problem" },
+      "api_reachable": { "name": "Cluster API reachable" }
+    },
+    "sensor": {
+      "nodes_online": { "name": "Nodes online" },
+      "ha_vm_node": { "name": "Home Assistant runs on" },
+      "copy_age": { "name": "Oldest copy age" },
+      "ha_resource_state": { "name": "Failover state" }
+    }
+  },
+  "issues": {
+    "node_down": {
+      "title": "Cluster node {node} is down",
+      "description": "Node **{node}** stopped responding. {online} of {total} nodes are up, so Home Assistant keeps running, but there is one less place for it to go if another node fails.\n\nCheck the node's power and network cable, then its screen. If it is dead for good: reinstall Proxmox on a replacement from the USB stick and rejoin it to the cluster (see the build plan). This message clears itself when the node is back."
+    },
+    "degraded": {
+      "title": "Only {online} of {total} cluster nodes are up",
+      "description": "Two or more nodes are down. If one more fails, the cluster loses its majority and Home Assistant stops on purpose. Fix the dead nodes before anything else."
+    },
+    "quorum_lost": {
+      "title": "The cluster has lost quorum",
+      "description": "The nodes can no longer agree on who is in charge. Home Assistant may stop at any moment. Check the cluster switch and the nodes' network cables first; a switch outage looks exactly like this."
+    },
+    "replication_stale": {
+      "title": "Copies of your VMs are not being made",
+      "description": "The one-minute copies that let Home Assistant restart on another node are behind or failing:\n\n{jobs}\n\nA stale copy means a failover would start from old data (or not at all). In Proxmox, open the VM > Replication and read the job's log. Copies older than {minutes} minutes or with errors are listed."
+    },
+    "ha_resource_error": {
+      "title": "Failover for {resource} is in state {state}",
+      "description": "Proxmox's high-availability manager reports **{resource}** on {node} in state **{state}**. It is not being protected right now. In Proxmox, open Datacenter > HA, read the error, fix the cause (usually a node or storage problem), then set the resource's state back to started."
+    },
+    "cluster_unreachable": {
+      "title": "Cluster Guard cannot reach Proxmox",
+      "description": "{host} has not answered the API for several checks: {error}\n\nIf Home Assistant itself is fine, the node you pointed Cluster Guard at may be down: open Cluster Guard's settings and use another node's address. This message clears itself when the API answers."
+    },
+    "ha_vm_not_protected": {
+      "title": "The Home Assistant VM is not fully protected",
+      "description": "**{vm}** is Home Assistant. HA resource: {ha}. Copies missing on: {missing}.\n\nIn Proxmox: VM > Replication > Add a job to every other node (schedule */1), and Datacenter > HA > Resources > Add the VM with state started. Without both, a node failure takes Home Assistant down for good instead of two minutes."
+    }
+  },
+  "services": {
+    "migrate": {
+      "name": "Migrate VM",
+      "description": "Live-migrate a VM to another online node. Use it before taking a node down for maintenance.",
+      "fields": {
+        "vmid": { "name": "VM ID", "description": "The VM's numeric ID, for example 100." },
+        "target": { "name": "Target node", "description": "The node name to move it to, for example pve2." }
+      }
+    }
+  }
+}
