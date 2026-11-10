@@ -78,16 +78,32 @@
   },
   "entity": {
     "binary_sensor": {
-      "quorum_lost": { "name": "Quorum lost" },
-      "node_online": { "name": "Node {node}" },
-      "replication_problem": { "name": "Copy problem" },
-      "api_reachable": { "name": "Cluster API reachable" }
+      "quorum_lost": {
+        "name": "Quorum lost"
+      },
+      "node_online": {
+        "name": "Node {node}"
+      },
+      "replication_problem": {
+        "name": "Copy problem"
+      },
+      "api_reachable": {
+        "name": "Cluster API reachable"
+      }
     },
     "sensor": {
-      "nodes_online": { "name": "Nodes online" },
-      "ha_vm_node": { "name": "Home Assistant runs on" },
-      "copy_age": { "name": "Oldest copy age" },
-      "ha_resource_state": { "name": "Failover state" }
+      "nodes_online": {
+        "name": "Nodes online"
+      },
+      "ha_vm_node": {
+        "name": "Home Assistant runs on"
+      },
+      "copy_age": {
+        "name": "Oldest copy age"
+      },
+      "ha_resource_state": {
+        "name": "Failover state"
+      }
     }
   },
   "issues": {
@@ -117,12 +133,11 @@
     },
     "ha_vm_not_protected": {
       "title": "The Home Assistant VM is not fully protected",
-      "description": "**{vm}** is Home Assistant. Failover resource: {ha}. Copies missing on: {missing}.\n\nWithout both, a node failure takes Home Assistant down for good instead of two minutes. Press **Fix** and Cluster Guard adds them for you.",
       "fix_flow": {
         "step": {
           "confirm": {
             "title": "Protect the Home Assistant VM",
-            "description": "Cluster Guard will make **{vm}** a high-availability resource (state started, one restart, one relocation) and add a one-minute replication job to every node that has no copy yet ({missing}). Nothing else is changed. Continue?"
+            "description": "**{vm}** is Home Assistant. Failover resource: {ha}. Copies missing on: {missing}. Without both, a node failure takes Home Assistant down for good instead of two minutes.\n\nCluster Guard will make it a high-availability resource (state started, one restart, one relocation) and add a one-minute replication job to every node that has no copy yet. Nothing else is changed. Continue?"
           }
         },
         "abort": {
@@ -137,8 +152,14 @@
       "name": "Migrate VM",
       "description": "Live-migrate a VM to another online node. Use it before taking a node down for maintenance.",
       "fields": {
-        "vmid": { "name": "VM ID", "description": "The VM's numeric ID, for example 100." },
-        "target": { "name": "Target node", "description": "The node name to move it to, for example pve2." }
+        "vmid": {
+          "name": "VM ID",
+          "description": "The VM's numeric ID, for example 100."
+        },
+        "target": {
+          "name": "Target node",
+          "description": "The node name to move it to, for example pve2."
+        }
       }
     }
   }
