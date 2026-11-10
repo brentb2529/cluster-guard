@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
@@ -9,6 +10,7 @@ import pytest
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.cluster_guard.api import ProxmoxAuthError, ProxmoxConnectionError
 from custom_components.cluster_guard.const import (
     CONF_HA_VMID,
     CONF_HOST,
@@ -36,6 +38,7 @@ class FakeProxmox:
         self.quorate = True
         self.vm_node = "pve1"
         self.ha_state = "started"
+        self.ha_resource = True  # VM 100 is an HA resource
         self.replication = {
             "100-0": {"target": "pve2", "last_sync": now - 60, "fail_count": 0, "error": None},
             "100-1": {"target": "pve3", "last_sync": now - 60, "fail_count": 0, "error": None},
@@ -44,6 +47,8 @@ class FakeProxmox:
         self.fail_all: Exception | None = None
         self.down_hosts: set[str] = set()  # node addresses that refuse connections
         self.asked: list[str] = []  # which host each API call went to
+        self.login_ok = {"root@pam": "pve-root-pw"}
+        self.provisioned: list[str] = []
 
     def _check(self, host: str | None = None):
         if self.fail_all:
@@ -51,8 +56,6 @@ class FakeProxmox:
         if host is not None:
             self.asked.append(host)
             if host in self.down_hosts:
-                from custom_components.cluster_guard.api import ProxmoxConnectionError  # noqa: PLC0415
-
                 raise ProxmoxConnectionError(f"{host}: connection refused")
 
     async def version(self) -> dict[str, Any]:
@@ -68,19 +71,21 @@ class FakeProxmox:
 
     async def ha_status(self) -> list[dict[str, Any]]:
         self._check()
-        return [
-            {"type": "quorum", "quorate": int(self.quorate), "status": "OK"},
-            {
-                "type": "service",
-                "sid": "vm:100",
-                "node": self.vm_node,
-                "state": self.ha_state,
-                "request_state": "started",
-            },
-        ]
+        out = [{"type": "quorum", "quorate": int(self.quorate), "status": "OK"}]
+        if self.ha_resource:
+            out.append(
+                {
+                    "type": "service",
+                    "sid": "vm:100",
+                    "node": self.vm_node,
+                    "state": self.ha_state,
+                    "request_state": "started",
+                }
+            )
+        return out
 
     async def ha_resources(self) -> list[dict[str, Any]]:
-        return [{"sid": "vm:100", "state": "started", "type": "vm"}]
+        return [{"sid": "vm:100", "state": "started", "type": "vm"}] if self.ha_resource else []
 
     async def resources(self, type_: str | None = None) -> list[dict[str, Any]]:
         self._check()
@@ -91,7 +96,7 @@ class FakeProxmox:
                 "name": "homeassistant",
                 "node": self.vm_node,
                 "status": "running",
-                "hastate": self.ha_state,
+                "hastate": self.ha_state if self.ha_resource else None,
             },
             {"type": "qemu", "vmid": 101, "name": "scratch", "node": "pve3", "status": "stopped"},
         ]
@@ -112,6 +117,30 @@ class FakeProxmox:
         self.vm_node = target
         return "UPID:fake"
 
+    # setup-time and fix-time writes
+    async def login(self, username: str, password: str) -> None:
+        self.calls.append(f"login {username}")
+        if self.login_ok.get(username) != password:
+            raise ProxmoxAuthError("401 for /access/ticket")
+
+    async def provision_token(self) -> tuple[str, str]:
+        self.provisioned.append("role+user+acl+token")
+        return "homeassistant@pve!cluster_guard", "made-secret"
+
+    def use_token(self, token_id: str, token_secret: str) -> None:
+        self.calls.append(f"use_token {token_id}")
+
+    async def add_ha_resource(self, vmid: int) -> None:
+        self.calls.append(f"add_ha vm:{vmid}")
+        self.ha_resource = True
+        self.ha_state = "started"
+
+    async def add_replication(self, vmid: int, target: str, schedule: str = "*/1") -> str:
+        job = f"{vmid}-{len(self.replication)}"
+        self.replication[job] = {"target": target, "last_sync": time.time(), "fail_count": 0, "error": None}
+        self.calls.append(f"add_repl {job} -> {target}")
+        return job
+
 
 @pytest.fixture
 def fake(monkeypatch: pytest.MonkeyPatch) -> FakeProxmox:
@@ -126,7 +155,7 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> FakeProxmox:
 
         def __getattr__(self, name):
             target = getattr(f, name)
-            if not callable(target):
+            if not callable(target) or not asyncio.iscoroutinefunction(target):
                 return target
 
             async def call(*args, **kwargs):

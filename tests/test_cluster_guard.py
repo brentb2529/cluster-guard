@@ -148,59 +148,70 @@ async def test_migrate_service(hass: HomeAssistant, entry: MockConfigEntry, fake
     assert hass.states.get("sensor.cluster_house_home_assistant_runs_on").state == "pve3"
 
 
-async def test_config_flow(hass: HomeAssistant, fake: FakeProxmox) -> None:
+async def test_config_flow_with_root_password_provisions_its_own_token(hass: HomeAssistant, fake: FakeProxmox) -> None:
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
     assert result["step_id"] == "user"
-    bad = await hass.config_entries.flow.async_configure(
-        result["flow_id"],
-        {"host": "pve1.lab", "port": 8006, "token_id": "nope", "token_secret": "s", "verify_ssl": False},
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"host": "pve1.lab", "port": 8006, "method": "password", "verify_ssl": False}
     )
+    assert result["step_id"] == "password"
+    bad = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"username": "root@pam", "password": "wrong"}
+    )
+    assert bad["errors"] == {"base": "invalid_auth"}
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"username": "root@pam", "password": "pve-root-pw"}
+    )
+    assert result["step_id"] == "ha_vm"
+    assert fake.provisioned == ["role+user+acl+token"]
+    field = next(k for k in result["data_schema"].schema if str(k) == "ha_vmid")
+    assert field.default() == "100"  # pre-selected by name: "homeassistant"
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {"ha_vmid": "100"})
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"]["token_id"] == "homeassistant@pve!cluster_guard"
+    assert result["data"]["token_secret"] == "made-secret"
+    assert "password" not in result["data"]
+
+
+async def test_config_flow_with_existing_token(hass: HomeAssistant, fake: FakeProxmox) -> None:
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"host": "pve1.lab", "port": 8006, "method": "token", "verify_ssl": False}
+    )
+    assert result["step_id"] == "token"
+    bad = await hass.config_entries.flow.async_configure(result["flow_id"], {"token_id": "nope", "token_secret": "s"})
     assert bad["errors"] == {"token_id": "token_format"}
     fake.fail_all = ProxmoxAuthError("401")
     bad = await hass.config_entries.flow.async_configure(
-        result["flow_id"],
-        {
-            "host": "pve1.lab",
-            "port": 8006,
-            "token_id": "homeassistant@pve!ha",
-            "token_secret": "s",
-            "verify_ssl": False,
-        },
+        result["flow_id"], {"token_id": "homeassistant@pve!ha", "token_secret": "s"}
     )
     assert bad["errors"] == {"base": "invalid_auth"}
     fake.fail_all = None
     result = await hass.config_entries.flow.async_configure(
-        result["flow_id"],
-        {
-            "host": "pve1.lab",
-            "port": 8006,
-            "token_id": "homeassistant@pve!ha",
-            "token_secret": "s",
-            "verify_ssl": False,
-        },
+        result["flow_id"], {"token_id": "homeassistant@pve!ha", "token_secret": "s"}
     )
     assert result["step_id"] == "ha_vm"
-    labels = [o["label"] for o in result["data_schema"].schema["ha_vmid"].config["options"]]
-    assert any("homeassistant (VM 100 on pve1)" in label for label in labels)
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {"ha_vmid": "100"})
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "Cluster house"
     assert result["data"]["ha_vmid"] == 100
 
 
-async def test_switches_to_another_node_when_the_configured_one_dies(
-    hass: HomeAssistant, entry: MockConfigEntry, fake: FakeProxmox
-) -> None:
+async def test_fix_button_protects_the_ha_vm(hass: HomeAssistant, entry: MockConfigEntry, fake: FakeProxmox) -> None:
+    from homeassistant.components.repairs import repairs_flow_manager  # noqa: PLC0415
+
+    fake.ha_resource = False
+    del fake.replication["100-1"]  # no copy on pve3
     coord = await setup_cg(hass, entry)
-    assert coord.client.host == "pve1.lab"
-    fake.down_hosts = {"pve1.lab", "192.168.77.11"}  # the node we were configured against is gone
-    fake.nodes["pve1"] = False
+    issue = ir.async_get(hass).async_get_issue(DOMAIN, ISSUE_NO_HA)
+    assert issue is not None and issue.is_fixable
+    assert issue.translation_placeholders["ha"] == "no"
+    mgr = repairs_flow_manager(hass)
+    result = await mgr.async_init(DOMAIN, data={"issue_id": ISSUE_NO_HA})
+    assert result["step_id"] == "confirm"
+    assert result["description_placeholders"]["missing"] == "pve3"
+    result = await mgr.async_configure(result["flow_id"], {})
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert fake.calls[-2:] == ["add_ha vm:100", "add_repl 100-1 -> pve3"]
     await refresh(hass, coord)
-    assert coord.client.host == "192.168.77.12"  # learned from the cluster, used without a gap
-    assert ISSUE_UNREACHABLE not in issues(hass)
-    assert f"{ISSUE_NODE_DOWN}_pve1" in issues(hass)
-    assert hass.states.get("sensor.cluster_house_nodes_online").state == "2"
-    fake.down_hosts = set()
-    fake.nodes["pve1"] = True
-    await refresh(hass, coord)
-    assert issues(hass) == set()
+    assert ISSUE_NO_HA not in issues(hass)

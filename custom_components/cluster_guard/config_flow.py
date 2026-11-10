@@ -1,7 +1,9 @@
-"""Config flow: one node's address and an API token; then which VM is Home Assistant."""
+"""Config flow: a node's address, then either Proxmox's root password (used once, to create Cluster
+Guard's own least-privilege user and token) or an existing API token; then which VM is Home Assistant."""
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import voluptuous as vol
@@ -27,21 +29,19 @@ from .const import (
     DOMAIN,
 )
 
+_LOGGER = logging.getLogger(__name__)
+METHOD_PASSWORD = "password"
+METHOD_TOKEN = "token"
+_HA_NAME_HINTS = ("homeassistant", "home-assistant", "home_assistant", "hassio", "haos", "hass")
 
-async def _probe(hass, data: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
-    """Return (cluster name, VMs) or raise."""
-    client = ProxmoxClient(
-        async_get_clientsession(hass, verify_ssl=data[CONF_VERIFY_SSL]),
-        data[CONF_HOST],
-        data[CONF_PORT],
-        data[CONF_TOKEN_ID],
-        data[CONF_TOKEN_SECRET],
-        data[CONF_VERIFY_SSL],
-    )
-    status = await client.cluster_status()
-    name = next((s.get("name") for s in status if s.get("type") == "cluster"), None) or data[CONF_HOST]
-    vms = [v for v in await client.resources("vm") if v.get("type") == "qemu"]
-    return name, vms
+
+def _likely_ha_vm(vms: list[dict[str, Any]]) -> str:
+    """Pre-select the VM that is probably Home Assistant, by name."""
+    for v in vms:
+        name = str(v.get("name", "")).lower()
+        if any(h in name for h in _HA_NAME_HINTS):
+            return str(v["vmid"])
+    return "0"
 
 
 def _vm_options(vms: list[dict[str, Any]]) -> list[selector.SelectOptionDict]:
@@ -59,56 +59,138 @@ class ClusterGuardConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
     def __init__(self) -> None:
-        self._data: dict[str, Any] = {}
+        self._conn: dict[str, Any] = {}
+        self._token: tuple[str, str] | None = None
         self._vms: list[dict[str, Any]] = []
         self._name = ""
 
+    def _client(self, token: tuple[str, str] | None = None) -> ProxmoxClient:
+        return ProxmoxClient(
+            async_get_clientsession(self.hass, verify_ssl=self._conn[CONF_VERIFY_SSL]),
+            self._conn[CONF_HOST],
+            self._conn[CONF_PORT],
+            token[0] if token else None,
+            token[1] if token else None,
+            self._conn[CONF_VERIFY_SSL],
+        )
+
+    async def _finish_probe(self, client: ProxmoxClient) -> ConfigFlowResult:
+        status = await client.cluster_status()
+        self._name = next((s.get("name") for s in status if s.get("type") == "cluster"), None) or self._conn[CONF_HOST]
+        self._vms = [v for v in await client.resources("vm") if v.get("type") == "qemu"]
+        await self.async_set_unique_id(f"{DOMAIN}_{self._name}")
+        self._abort_if_unique_id_configured()
+        return await self.async_step_ha_vm()
+
+    # ---- step 1: where, and how to authenticate
+
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        if user_input is not None:
+            self._conn = {
+                CONF_HOST: user_input[CONF_HOST].strip(),
+                CONF_PORT: int(user_input[CONF_PORT]),
+                CONF_VERIFY_SSL: bool(user_input[CONF_VERIFY_SSL]),
+            }
+            if user_input["method"] == METHOD_TOKEN:
+                return await self.async_step_token()
+            return await self.async_step_password()
+        return self.async_show_form(
+            step_id="user",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_HOST): str,
+                    vol.Required(CONF_PORT, default=DEFAULT_PORT): int,
+                    vol.Required("method", default=METHOD_PASSWORD): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[METHOD_PASSWORD, METHOD_TOKEN],
+                            translation_key="method",
+                            mode=selector.SelectSelectorMode.LIST,
+                        )
+                    ),
+                    vol.Required(CONF_VERIFY_SSL, default=DEFAULT_VERIFY_SSL): bool,
+                }
+            ),
+        )
+
+    # ---- step 2a: root password once -> own user, role and token
+
+    async def async_step_password(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
-            user_input[CONF_HOST] = user_input[CONF_HOST].strip()
-            user_input[CONF_TOKEN_ID] = user_input[CONF_TOKEN_ID].strip()
-            if "!" not in user_input[CONF_TOKEN_ID] or "@" not in user_input[CONF_TOKEN_ID]:
+            client = self._client()
+            try:
+                await client.login(user_input["username"].strip(), user_input["password"])
+                self._token = await client.provision_token()
+                client.use_token(*self._token)
+                return await self._finish_probe(client)
+            except ProxmoxAuthError:
+                errors["base"] = "invalid_auth"
+            except ProxmoxConnectionError:
+                errors["base"] = "cannot_connect"
+            except ProxmoxError:
+                _LOGGER.exception("Could not set up the Cluster Guard user on Proxmox")
+                errors["base"] = "provision_failed"
+        return self.async_show_form(
+            step_id="password",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("username", default="root@pam"): str,
+                    vol.Required("password"): selector.TextSelector(
+                        selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
+                    ),
+                }
+            ),
+            errors=errors,
+            description_placeholders={"host": self._conn[CONF_HOST]},
+        )
+
+    # ---- step 2b: an existing token
+
+    async def async_step_token(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            token_id = user_input[CONF_TOKEN_ID].strip()
+            if "!" not in token_id or "@" not in token_id:
                 errors[CONF_TOKEN_ID] = "token_format"
             else:
+                self._token = (token_id, user_input[CONF_TOKEN_SECRET])
                 try:
-                    self._name, self._vms = await _probe(self.hass, user_input)
+                    return await self._finish_probe(self._client(self._token))
                 except ProxmoxAuthError:
                     errors["base"] = "invalid_auth"
                 except ProxmoxConnectionError:
                     errors["base"] = "cannot_connect"
                 except ProxmoxError:
                     errors["base"] = "unknown"
-            if not errors:
-                await self.async_set_unique_id(f"{DOMAIN}_{self._name}")
-                self._abort_if_unique_id_configured()
-                self._data = user_input
-                return await self.async_step_ha_vm()
         return self.async_show_form(
-            step_id="user",
+            step_id="token",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_HOST, default=(user_input or {}).get(CONF_HOST, "")): str,
-                    vol.Required(CONF_PORT, default=(user_input or {}).get(CONF_PORT, DEFAULT_PORT)): int,
                     vol.Required(CONF_TOKEN_ID, default=(user_input or {}).get(CONF_TOKEN_ID, "")): str,
                     vol.Required(CONF_TOKEN_SECRET): selector.TextSelector(
                         selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
                     ),
-                    vol.Required(CONF_VERIFY_SSL, default=DEFAULT_VERIFY_SSL): bool,
                 }
             ),
             errors=errors,
         )
 
+    # ---- step 3: which VM is Home Assistant
+
     async def async_step_ha_vm(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         if user_input is not None:
-            self._data[CONF_HA_VMID] = int(user_input[CONF_HA_VMID])
-            return self.async_create_entry(title=f"Cluster {self._name}", data=self._data)
+            data = {
+                **self._conn,
+                CONF_TOKEN_ID: self._token[0],
+                CONF_TOKEN_SECRET: self._token[1],
+                CONF_HA_VMID: int(user_input[CONF_HA_VMID]),
+            }
+            return self.async_create_entry(title=f"Cluster {self._name}", data=data)
         return self.async_show_form(
             step_id="ha_vm",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_HA_VMID, default="0"): selector.SelectSelector(
+                    vol.Required(CONF_HA_VMID, default=_likely_ha_vm(self._vms)): selector.SelectSelector(
                         selector.SelectSelectorConfig(
                             options=_vm_options(self._vms), mode=selector.SelectSelectorMode.LIST
                         )

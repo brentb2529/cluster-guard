@@ -3,23 +3,40 @@
     "step": {
       "user": {
         "title": "Connect to your Proxmox cluster",
-        "description": "Any node will do: the cluster answers from every node. Make an API token in Proxmox under Datacenter > Permissions > API Tokens for a user with the PVEAuditor role (read-only is enough; add VM.Migrate to that user if you want the migrate action).",
+        "description": "Any node will do: the cluster answers from every node. Nothing needs to be prepared on Proxmox beforehand.",
         "data": {
           "host": "Node address",
           "port": "Port",
-          "token_id": "API token ID",
-          "token_secret": "API token secret",
+          "method": "How to sign in",
           "verify_ssl": "Verify the certificate"
         },
         "data_description": {
           "host": "For example 192.168.2.11 or pve1.local",
-          "token_id": "In the form user@realm!tokenname, for example homeassistant@pve!ha",
           "verify_ssl": "Leave off for Proxmox's self-signed certificate"
+        }
+      },
+      "password": {
+        "title": "Let Cluster Guard set itself up on {host}",
+        "description": "Enter Proxmox's root password once. Cluster Guard uses it to create its own user `homeassistant@pve`, a role with only the rights it needs (read the cluster, protect and move VMs), and an API token. The password is not stored.",
+        "data": {
+          "username": "Proxmox user",
+          "password": "Password"
+        }
+      },
+      "token": {
+        "title": "Use an existing API token",
+        "description": "From Proxmox: Datacenter > Permissions > API Tokens. The token's user needs at least the PVEAuditor role; add VM.Migrate, VM.Replicate and Sys.Console for the Fix and Migrate actions.",
+        "data": {
+          "token_id": "API token ID",
+          "token_secret": "API token secret"
+        },
+        "data_description": {
+          "token_id": "In the form user@realm!tokenname, for example homeassistant@pve!cluster_guard"
         }
       },
       "ha_vm": {
         "title": "Which VM is Home Assistant?",
-        "description": "Cluster {cluster} is reachable. Pick the VM this Home Assistant runs in, so Cluster Guard can watch its copies and where it runs.",
+        "description": "Cluster {cluster} is reachable. Pick the VM this Home Assistant runs in, so Cluster Guard can watch its copies and where it runs. The likely one is pre-selected.",
         "data": {
           "ha_vmid": "Home Assistant VM"
         }
@@ -27,12 +44,21 @@
     },
     "error": {
       "cannot_connect": "Could not reach the node. Check the address and that port 8006 is open.",
-      "invalid_auth": "Proxmox rejected the token. Check the token ID, the secret, and that the token has the PVEAuditor role.",
+      "invalid_auth": "Proxmox rejected the sign-in. Check the user and password (or token), and that the account may create users.",
+      "provision_failed": "Signed in, but Cluster Guard could not create its user and token on Proxmox; see the Home Assistant log.",
       "token_format": "The token ID looks like user@realm!tokenname.",
       "unknown": "Unexpected answer from Proxmox; see the log."
     },
     "abort": {
       "already_configured": "This cluster is already set up."
+    }
+  },
+  "selector": {
+    "method": {
+      "options": {
+        "password": "Proxmox root password, used once (recommended)",
+        "token": "I already have an API token"
+      }
     }
   },
   "options": {
@@ -79,7 +105,7 @@
     },
     "replication_stale": {
       "title": "Copies of your VMs are not being made",
-      "description": "The one-minute copies that let Home Assistant restart on another node are behind or failing:\n\n{jobs}\n\nA stale copy means a failover would start from old data (or not at all). In Proxmox, open the VM > Replication and read the job's log. Copies older than {minutes} minutes or with errors are listed."
+      "description": "The one-minute copies that let Home Assistant restart on another node are behind or failing:\n\n{jobs}\n\nA stale copy means a failover would start from old data (or not at all). In Proxmox, open the VM > Replication and read the job's log. Copies older than {minutes} minutes or with errors are listed. After a node comes back from a reboot, one failed run is normal and clears itself within a few minutes."
     },
     "ha_resource_error": {
       "title": "Failover for {resource} is in state {state}",
@@ -87,11 +113,23 @@
     },
     "cluster_unreachable": {
       "title": "Cluster Guard cannot reach Proxmox",
-      "description": "{host} has not answered the API for several checks: {error}\n\nIf Home Assistant itself is fine, the node you pointed Cluster Guard at may be down: open Cluster Guard's settings and use another node's address. This message clears itself when the API answers."
+      "description": "No node has answered the API for several checks (last tried {host}): {error}\n\nIf Home Assistant itself is fine, the nodes may be unreachable from it: check the network between them. This message clears itself when a node answers."
     },
     "ha_vm_not_protected": {
       "title": "The Home Assistant VM is not fully protected",
-      "description": "**{vm}** is Home Assistant. HA resource: {ha}. Copies missing on: {missing}.\n\nIn Proxmox: VM > Replication > Add a job to every other node (schedule */1), and Datacenter > HA > Resources > Add the VM with state started. Without both, a node failure takes Home Assistant down for good instead of two minutes."
+      "description": "**{vm}** is Home Assistant. Failover resource: {ha}. Copies missing on: {missing}.\n\nWithout both, a node failure takes Home Assistant down for good instead of two minutes. Press **Fix** and Cluster Guard adds them for you.",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Protect the Home Assistant VM",
+            "description": "Cluster Guard will make **{vm}** a high-availability resource (state started, one restart, one relocation) and add a one-minute replication job to every node that has no copy yet ({missing}). Nothing else is changed. Continue?"
+          }
+        },
+        "abort": {
+          "no_permission": "Proxmox refused: the token Cluster Guard uses may not change HA resources or replication. In Proxmox, give its user the VM.Replicate and Sys.Console privileges, or set Cluster Guard up again with the root password so it creates its own role.",
+          "failed": "Proxmox reported an error: {error}"
+        }
+      }
     }
   },
   "services": {

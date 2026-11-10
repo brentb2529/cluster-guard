@@ -353,6 +353,7 @@ class ClusterGuardCoordinator(DataUpdateCoordinator[ClusterState]):
                     "missing": ", ".join(sorted(others - copies)) or "none",
                     "ha": "yes" if protected else "no",
                 },
+                fixable=True,
             )
 
     @staticmethod
@@ -370,21 +371,42 @@ class ClusterGuardCoordinator(DataUpdateCoordinator[ClusterState]):
         placeholders: dict[str, str],
         *,
         key: str | None = None,
+        fixable: bool = False,
     ) -> None:
         if active:
             ir.async_create_issue(
                 self.hass,
                 DOMAIN,
                 issue_id,
-                is_fixable=False,
+                is_fixable=fixable,
                 severity=severity,
                 translation_key=key or issue_id,
                 translation_placeholders=placeholders,
+                data=placeholders if fixable else None,
             )
         else:
             ir.async_delete_issue(self.hass, DOMAIN, issue_id)
 
     # ------------------------------------------------------------ actions
+
+    async def async_protect_ha_vm(self) -> list[str]:
+        """Make the HA VM an HA resource and give it a copy on every other node. Returns what was done."""
+        st = self.data
+        vmid = self.ha_vmid
+        if st is None or vmid is None or vmid not in st.vms:
+            raise ValueError("the Home Assistant VM is not known to the cluster")
+        done: list[str] = []
+        if not any(r.vmid == vmid for r in st.ha.values()):
+            await self.client.add_ha_resource(vmid)
+            done.append("HA resource added (started, max_restart 1, max_relocate 1)")
+        here = st.vms[vmid].node
+        covered = {r.target for r in st.replication.values() if r.guest == vmid}
+        for node in sorted(st.nodes):
+            if node != here and node not in covered:
+                job = await self.client.add_replication(vmid, node)
+                done.append(f"replication job {job} to {node}, every minute")
+        await self.async_request_refresh()
+        return done
 
     async def async_migrate(self, vmid: int, target: str) -> None:
         """Live-migrate a VM to another online node (the only write Cluster Guard performs)."""
