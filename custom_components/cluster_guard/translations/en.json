@@ -44,6 +44,18 @@
         "data": {
           "ha_vmid": "Home Assistant VM"
         }
+      },
+      "reauth_confirm": {
+        "title": "Sign in to {host} again",
+        "description": "Proxmox no longer accepts Cluster Guard's API token. That happens after the cluster was rebuilt or the token was deleted in Proxmox. Enter the Proxmox **root** password once more; Cluster Guard recreates its own user and token and keeps everything else as it was. The password is not stored.",
+        "data": {
+          "username": "Proxmox user",
+          "password": "Password"
+        },
+        "data_description": {
+          "username": "Leave as root@pam unless you sign in to Proxmox with a different administrator account.",
+          "password": "The Proxmox root password, not your Home Assistant password."
+        }
       }
     },
     "error": {
@@ -54,7 +66,8 @@
       "unknown": "Unexpected answer from Proxmox; see the log."
     },
     "abort": {
-      "already_configured": "This cluster is already set up."
+      "already_configured": "This cluster is already set up.",
+      "reauth_successful": "Cluster Guard is connected again."
     }
   },
   "selector": {

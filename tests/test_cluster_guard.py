@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import issue_registry as ir
@@ -215,3 +216,29 @@ async def test_fix_button_protects_the_ha_vm(hass: HomeAssistant, entry: MockCon
     assert fake.calls[-2:] == ["add_ha vm:100", "add_repl 100-1 -> pve3"]
     await refresh(hass, coord)
     assert ISSUE_NO_HA not in issues(hass)
+
+
+async def test_rebuilt_cluster_asks_for_the_password_again(
+    hass: HomeAssistant, entry: MockConfigEntry, fake: FakeProxmox
+) -> None:
+    """The token died with the old cluster: HA shows a re-authenticate prompt, one password fixes it."""
+    coord = await setup_cg(hass, entry)
+    fake.fail_all = ProxmoxAuthError("401 Authentication failed for /cluster/status")
+    await refresh(hass, coord)
+    flows = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
+    assert len(flows) == 1 and flows[0]["context"]["source"] == "reauth"
+    assert flows[0]["step_id"] == "reauth_confirm"
+    fake.fail_all = None
+    bad = await hass.config_entries.flow.async_configure(
+        flows[0]["flow_id"], {"username": "root@pam", "password": "wrong"}
+    )
+    assert bad["errors"] == {"base": "invalid_auth"}
+    result = await hass.config_entries.flow.async_configure(
+        flows[0]["flow_id"], {"username": "root@pam", "password": "pve-root-pw"}
+    )
+    assert result["type"] is FlowResultType.ABORT and result["reason"] == "reauth_successful"
+    assert fake.provisioned == ["role+user+acl+token"]
+    assert entry.data["token_secret"] == "made-secret"
+    assert entry.data["ha_vmid"] == 100  # everything else kept
+    await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.LOADED

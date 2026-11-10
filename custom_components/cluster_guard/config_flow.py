@@ -4,6 +4,7 @@ Guard's own least-privilege user and token) or an existing API token; then which
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 import voluptuous as vol
@@ -132,6 +133,49 @@ class ClusterGuardConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors["base"] = "provision_failed"
         return self.async_show_form(
             step_id="password",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("username", default="root@pam"): str,
+                    vol.Required("password"): selector.TextSelector(
+                        selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
+                    ),
+                }
+            ),
+            errors=errors,
+            description_placeholders={"host": self._conn[CONF_HOST]},
+        )
+
+    # ---- re-authentication: the token stopped working (cluster rebuilt, token deleted)
+
+    async def async_step_reauth(self, entry_data: Mapping[str, Any]) -> ConfigFlowResult:
+        self._conn = {
+            CONF_HOST: entry_data[CONF_HOST],
+            CONF_PORT: int(entry_data[CONF_PORT]),
+            CONF_VERIFY_SSL: bool(entry_data[CONF_VERIFY_SSL]),
+        }
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            client = self._client()
+            try:
+                await client.login(user_input["username"].strip(), user_input["password"])
+                token = await client.provision_token()
+                client.use_token(*token)
+                await client.cluster_status()
+                return self.async_update_reload_and_abort(
+                    self._get_reauth_entry(), data_updates={CONF_TOKEN_ID: token[0], CONF_TOKEN_SECRET: token[1]}
+                )
+            except ProxmoxAuthError:
+                errors["base"] = "invalid_auth"
+            except ProxmoxConnectionError:
+                errors["base"] = "cannot_connect"
+            except ProxmoxError:
+                _LOGGER.exception("Could not recreate the Cluster Guard user on Proxmox")
+                errors["base"] = "provision_failed"
+        return self.async_show_form(
+            step_id="reauth_confirm",
             data_schema=vol.Schema(
                 {
                     vol.Required("username", default="root@pam"): str,

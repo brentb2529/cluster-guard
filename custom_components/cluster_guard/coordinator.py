@@ -17,6 +17,7 @@ from datetime import timedelta
 from homeassistant.components import persistent_notification
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -154,8 +155,8 @@ class ClusterGuardCoordinator(DataUpdateCoordinator[ClusterState]):
     async def _async_update_data(self) -> ClusterState:
         try:
             state = await self._fetch_from_any_node()
-        except ProxmoxAuthError as err:
-            raise UpdateFailed(f"Proxmox rejected the API token: {err}") from err
+        except ProxmoxAuthError as err:  # token gone (cluster rebuilt, token deleted): HA asks for the password again
+            raise ConfigEntryAuthFailed(f"Proxmox rejected the API token: {err}") from err
         except (ProxmoxConnectionError, ProxmoxError) as err:
             self._failures += 1
             if self._failures >= UNREACHABLE_POLLS:
