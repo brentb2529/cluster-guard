@@ -17,10 +17,14 @@
       },
       "password": {
         "title": "Let Cluster Guard set itself up on {host}",
-        "description": "Enter Proxmox's root password once. Cluster Guard uses it to create its own user `homeassistant@pve`, a role with only the rights it needs (read the cluster, protect and move VMs), and an API token. The password is not stored.",
+        "description": "Enter the password of the Proxmox **root** account on {host}: the one you chose when installing Proxmox on the node, and that you use to sign in to its web page at https://{host}:8006. Cluster Guard uses it once to create its own user `homeassistant@pve`, a role with only the rights it needs (read the cluster, protect and move VMs), and an API token. The password itself is not stored anywhere in Home Assistant.",
         "data": {
           "username": "Proxmox user",
           "password": "Password"
+        },
+        "data_description": {
+          "username": "Leave as root@pam unless you sign in to Proxmox with a different administrator account.",
+          "password": "The Proxmox root password, not your Home Assistant password."
         }
       },
       "token": {
