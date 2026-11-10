@@ -122,7 +122,7 @@ class ProxmoxClient:
         users = {u["userid"] for u in await self.get("/access/users")}
         if CG_USER not in users:
             await self.post("/access/users", userid=CG_USER, comment="Home Assistant Cluster Guard")
-        await self.put("/access/acl", path="/", roles=CG_ROLE, users=CG_USER)
+        await self._request("PUT", "/access/acl", data={"path": "/", "roles": CG_ROLE, "users": CG_USER})
         existing = {t["tokenid"] for t in await self.get(f"/access/users/{CG_USER}/token")}
         if CG_TOKEN_NAME in existing:
             await self.delete(f"/access/users/{CG_USER}/token/{CG_TOKEN_NAME}")
